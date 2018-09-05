@@ -33,13 +33,13 @@ florisRunner = floris(layout, controlSet, subModels);
 % Initial control settings
 yawAngleArrayOut   = 270.0*ones(1,layout.nTurbs);
 pitchAngleArrayOut = 0.0*ones(1,layout.nTurbs);
-controlTimeInterval  = 600; % Time to wait after applying control signal
-measurementSignalAvgTime = 300; % Time to average data. Needs to be >= controlTimeInterval
+controlTimeInterval  = 10; % Time to wait after applying control signal
+measurementSignalAvgTime = 5; % Time to average data. Needs to be >= controlTimeInterval
 sigma_WD = deg2rad(6)  % 6 deg for 8 m/s by M. Bertele, WES
 dataSend = setupZmqSignal(yawAngleArrayOut,pitchAngleArrayOut);
 
 disp(['Entering wind farm controller loop...']);
-timeLastControl = 20e3; % -Inf: optimize right away. 0: optimize after controlTimeInterval (no prec), 20e3: optimize after controlTimeInterval (with prec)
+timeLastControl = 0; % -Inf: optimize right away. 0: optimize after controlTimeInterval (no prec), 20e3: optimize after controlTimeInterval (with prec)
 measurementVector = [];
 while 1
     % Receive information from SOWFA
@@ -51,29 +51,30 @@ while 1
     if currentTime-timeLastControl >= controlTimeInterval
         disp([datestr(rem(now,1)) '__ Optimizing control at timestamp ' num2str(currentTime) '.']);
         
-        % Time-average measurements
-        if currentTime > controlTimeInterval % Past 1st iteration
+        % Estimation
+        if currentTime >= controlTimeInterval % Past 1st iteration
+			% Set up measurements
             avgMeasurementVector = mean(measurementVector(end-measurementSignalAvgTime+1:end,:),1);
+			
+			measurementSet = struct();
+			measurementSet.P = struct('values',avgMeasurementVector(1:3:end),'stdev',[1 1 1 2 2 2 3 3 3]);
+			measurementSet.estimParams = {'TI0','Vref'}
+			disp(measurementSet.P)
+			
+			disp([datestr(rem(now,1)) '__    Doing estimation cycle.']);
+			
+			florisRunner.clearOutput;
+			estTool = estimator({florisRunner},{measurementSet});
+			xopt = estTool.gaEstimation([0.0 6.0],[0.40 10.0]) % Estimate
+			
+			WD_measurements = 0.+sigma_WD*randn(1,9); % U=8m/s -> std = 6 deg. according to https://www.wind-energ-sci.net/2/615/2017/wes-2-615-2017.pdf
+			florisRunner.layout.ambientInflow.windDirection = mean(WD_measurements);
+			florisRunner.layout.ambientInflow.TI0  = xopt(1);
+			florisRunner.layout.ambientInflow.Vref = xopt(2);
+			clear xopt		
         end
         
-        % Estimation
-        measurementSet = struct();
-        measurementSet.P = struct('values',avgMeasurementVector(1:3:end),'stdev',[1 1 1 2 2 2 3 3 3]);
-        measurementSet.estimParams = {'TI0','Vref'}
-        disp(measurementSet.P)
-        
-        disp([datestr(rem(now,1)) '__    Doing estimation cycle.']);
-        
-        florisRunner.clearOutput;
-        estTool = estimator({florisRunner},{measurementSet});
-        xopt = estTool.gaEstimation([0.0 6.0],[0.40 10.0]) % Estimate
-        
-        WD_measurements = 0.+sigma_WD*randn(1,9); % U=8m/s -> std = 6 deg. according to https://www.wind-energ-sci.net/2/615/2017/wes-2-615-2017.pdf
-        florisRunner.layout.ambientInflow.windDirection = mean(WD_measurements);
-        florisRunner.layout.ambientInflow.TI0  = xopt(1);
-        florisRunner.layout.ambientInflow.Vref = xopt(2);
-        clear xopt
-        
+
         % Optimization
         disp([datestr(rem(now,1)) '__    Doing optimization cycle.']);
         [xopt,P_bl,P_opt] = optimizeControlSettingsRobust(florisRunner,'yawOpt',true,'pitchOpt',false,'axOpt',false,sigma_WD/3,5,true);
