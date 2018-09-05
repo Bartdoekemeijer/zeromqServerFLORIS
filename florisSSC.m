@@ -98,7 +98,8 @@ end
 zmqServer.disconnect()
 
 function [dataOut] = setupZmqSignal(yawAngles,pitchAngles)
+	dataOut = [];
     for i = 1:length(yawAngles)
-        dataOut = [yawAngles(i) pitchAngles(i)];
+        dataOut = [dataOut yawAngles(i) pitchAngles(i)];
     end
 end
